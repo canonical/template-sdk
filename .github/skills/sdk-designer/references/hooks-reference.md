@@ -32,6 +32,31 @@ export PATH="${SDK}/bin:\$PATH"
 EOF
 ```
 
+### Pattern: Expose baked Python package via PYTHONPATH
+
+Use when Python is the primary SDK tool and was installed into the SDK image with
+`pip install --prefix` at build time (see sdk-patterns.md "Python primary harness").
+
+```bash
+#!/usr/bin/bash
+set -e
+# Debian-patched pip may install to dist-packages instead of site-packages,
+# and the Python version string varies. Discover the actual directory.
+PACKAGES_DIR=$(python3 -c "
+import glob
+dirs = sorted(glob.glob('$SDK/lib/python*/*-packages'))
+print(dirs[0] if dirs else '')
+")
+[ -n "$PACKAGES_DIR" ] || { echo "ERROR: no packages dir under $SDK/lib/" >&2; exit 1; }
+cat <<EOF >/etc/profile.d/mytool.sh
+export PATH="$SDK/bin:\$PATH"
+export PYTHONPATH="${PACKAGES_DIR}\${PYTHONPATH:+:\$PYTHONPATH}"
+EOF
+```
+
+This does not require any apt packages at runtime — the tool is already in the
+immutable SDK image.
+
 ### Pattern: Install apt packages
 
 ```bash
@@ -88,7 +113,14 @@ systemctl --user daemon-reload
 systemctl --user enable --now myservice
 ```
 
-### Pattern: Create a virtual environment
+### Pattern: Create a virtual environment (auxiliary Python helper only)
+
+Use **only** when Python is a helper alongside a compiled primary tool, or when
+users need to install their own packages/extensions into the tool (e.g. JupyterLab
+plugins). Do **not** use this pattern when Python is the primary SDK tool — the
+resulting venv lives in user-writable space and can be modified or self-updated,
+breaking the Workshop immutability contract. Use the baked `--prefix` approach
+instead (see sdk-patterns.md).
 
 ```bash
 #!/usr/bin/bash
