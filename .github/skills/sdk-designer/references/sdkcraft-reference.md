@@ -253,3 +253,77 @@ parts:
       VERSION=$(cat "$CRAFT_PROJECT_DIR/VERSION")
       craftctl set version="$VERSION"
 ```
+
+## Complete Example — Python primary-harness SDK
+
+Use when a Python package **is** the SDK's main tool. The package is installed
+into the SDK image at build time — immutable, version-locked, not self-updatable.
+Mount plugs are for user data only (credentials, session history).
+
+```yaml
+name: mytool
+adopt-info: mytool
+summary: The MyTool SDK for Workshop
+description: |
+  This SDK provides MyTool for interactive use within a workshop.
+  User configuration and session data are persisted across workshop updates.
+license: MIT
+platforms:
+  ubuntu@24.04:amd64:
+  ubuntu@26.04:amd64:
+  ubuntu@24.04:arm64:
+  ubuntu@26.04:arm64:
+
+plugs:
+  mytool-data:
+    interface: mount
+    workshop-target: /home/workshop/.mytool
+    mode: 0o700
+
+parts:
+  mytool:
+    plugin: nil
+    build-packages: [python3-pip]
+    override-pull: |
+      VERSION=$(cat "$CRAFT_PROJECT_DIR/VERSION")
+      craftctl set version="$VERSION"
+    override-build: |
+      pip3 install "mytool==$(cat "$CRAFT_PROJECT_DIR/VERSION")" \
+        --prefix "$CRAFT_PART_INSTALL" \
+        --no-compile
+      # Debian/Ubuntu pip routes --prefix output through a local/ subdirectory
+      # (scripts → local/bin/, packages → local/lib/). Flatten it so the
+      # prime paths are where sdkcraft expects them.
+      if [ -d "$CRAFT_PART_INSTALL/local" ]; then
+        cp -a "$CRAFT_PART_INSTALL/local/." "$CRAFT_PART_INSTALL/"
+        rm -rf "$CRAFT_PART_INSTALL/local"
+      fi
+      install -m 644 "$CRAFT_PROJECT_DIR/VERSION" "$CRAFT_PART_INSTALL/VERSION"
+    prime:
+      - bin/
+      - lib/
+      - VERSION
+```
+
+Matching `hooks/setup-base`:
+
+```bash
+#!/usr/bin/bash
+set -e
+# Debian-patched pip may install to dist-packages instead of site-packages,
+# and the Python version string varies. Discover the actual directory.
+PACKAGES_DIR=$(python3 -c "
+import glob
+dirs = sorted(glob.glob('$SDK/lib/python*/*-packages'))
+print(dirs[0] if dirs else '')
+")
+[ -n "$PACKAGES_DIR" ] || { echo "ERROR: no packages dir under $SDK/lib/" >&2; exit 1; }
+cat <<EOF >/etc/profile.d/mytool.sh
+export PATH="$SDK/bin:\$PATH"
+export PYTHONPATH="${PACKAGES_DIR}\${PYTHONPATH:+:\$PYTHONPATH}"
+EOF
+```
+
+No `setup-project` is needed for tool installation. If user data directories
+require initialisation, a minimal `setup-project` may `mkdir -p` them; the
+mount plug does not guarantee the directory already exists on a fresh host.

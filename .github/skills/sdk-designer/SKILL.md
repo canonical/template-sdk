@@ -35,6 +35,11 @@ Before writing any file, determine:
 8. **What is the upstream version scheme?** (semver, calver, codename?)
 9. **What is the upstream datasource for Renovate?** (npm, pypi, github-releases, node-version, golang-version?)
 10. **How many version tracks?** Single `latest` channel, or multiple major/minor branches?
+11. **If Python: is it the primary tool or an auxiliary helper?** A Python package that
+    *is* the SDK's main deliverable (e.g. a full AI coding harness) must be baked into
+    the SDK image at build time so it is immutable and cannot self-update. A Python
+    helper that sits alongside a compiled binary may be installed at runtime via hooks.
+    **Ask the user** if this is unclear.
 
 If information is missing or ambiguous, ask the user before proceeding.
 

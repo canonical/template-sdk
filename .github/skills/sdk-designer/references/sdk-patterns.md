@@ -82,9 +82,18 @@ How is the upstream software distributed?
 │   → plugin: cmake
 │   → git clone in override-pull
 │
-├── Python package (JupyterLab)
+├── Python package — helper/auxiliary (sits alongside a compiled SDK tool)
 │   → plugin: nil (install at runtime via pip/uv in hooks)
 │   → Just set version in override-pull
+│   → Acceptable because the compiled binary is the immutable deliverable
+│
+├── Python package — primary harness (Python IS the tool; no compiled binary)
+│   → plugin: nil + build-packages: [python3-pip]
+│   → override-build: pip3 install --prefix "$CRAFT_PART_INSTALL"
+│   → prime: [bin/, lib/, VERSION]
+│   → setup-base: PATH + PYTHONPATH pointing into $SDK/lib/
+│   → Immutable: baked into SDK image, cannot self-update
+│   → See "Plugin: nil — Python primary harness" below
 │
 ├── System packages via apt (ROCm, .NET, ROS 2)
 │   → plugin: nil
@@ -115,6 +124,87 @@ parts:
 ```
 
 Use when: SDK installs everything via hooks, or has no upstream binary.
+
+
+### Plugin: nil — Python primary harness
+
+Use when: Python *is* the SDK's main tool (no compiled binary). Bakes the package
+and all dependencies into the SDK image so the tool is immutable and version-locked.
+Workshop SDKs must not be self-updatable; placing the tool in user-writable space
+(e.g. a home-directory venv) breaks that contract.
+
+```yaml
+parts:
+  myapp:
+    plugin: nil
+    build-packages: [python3-pip]
+    override-pull: |
+      VERSION=$(cat "$CRAFT_PROJECT_DIR/VERSION")
+      craftctl set version="$VERSION"
+    override-build: |
+      pip3 install "myapp==$(cat "$CRAFT_PROJECT_DIR/VERSION")" \
+        --prefix "$CRAFT_PART_INSTALL" \
+        --no-compile
+      # Debian/Ubuntu pip routes --prefix output through a local/ subdirectory
+      # (scripts → local/bin/, packages → local/lib/). Flatten it so the
+      # prime paths are where sdkcraft expects them.
+      if [ -d "$CRAFT_PART_INSTALL/local" ]; then
+        cp -a "$CRAFT_PART_INSTALL/local/." "$CRAFT_PART_INSTALL/"
+        rm -rf "$CRAFT_PART_INSTALL/local"
+      fi
+      install -m 644 "$CRAFT_PROJECT_DIR/VERSION" "$CRAFT_PART_INSTALL/VERSION"
+    prime:
+      - bin/
+      - lib/
+      - VERSION
+```
+
+Pair with this `setup-base` to wire `PATH` and `PYTHONPATH` at runtime:
+
+```bash
+#!/usr/bin/bash
+set -e
+# Debian-patched pip may install to dist-packages instead of site-packages,
+# and the Python version string varies. Discover the actual directory.
+PACKAGES_DIR=$(python3 -c "
+import glob
+dirs = sorted(glob.glob('$SDK/lib/python*/*-packages'))
+print(dirs[0] if dirs else '')
+")
+[ -n "$PACKAGES_DIR" ] || { echo "ERROR: no packages dir under $SDK/lib/" >&2; exit 1; }
+cat <<EOF >/etc/profile.d/myapp.sh
+export PATH="$SDK/bin:\$PATH"
+export PYTHONPATH="${PACKAGES_DIR}\${PYTHONPATH:+:\$PYTHONPATH}"
+EOF
+```
+
+No `setup-project` is needed for the tool itself. Any mount plugs are for **user
+data only** (credentials, session history) — not for the tool installation.
+
+> **`--no-compile`:** Always pass this flag. Python `.pyc` bytecode files are
+> unnecessary in the SDK image (Python regenerates them on first import) and
+> `--no-compile` prevents them from being created. Note: `.pyc` files are
+> architecture-independent (CPython bytecode targets the VM, not the CPU), so
+> they are not a cross-arch correctness risk — but they are bloat.
+>
+> **Native-extension cross-arch risk:** Python packages commonly depend on
+> libraries that ship architecture-specific `.so` files (e.g. pydantic,
+> cryptography, numpy). Cross-compiling on amd64 for arm64 causes pip to
+> download amd64 wheels for every dependency, producing an SDK image that
+> fails at runtime on non-amd64 targets with `ImportError: wrong ELF class`.
+> **Default to native builds** — use the bare platform entry form so each
+> architecture gets its own build:
+>
+> ```yaml
+> platforms:
+>   ubuntu@24.04:amd64:
+>   ubuntu@24.04:arm64:
+>   ubuntu@24.04:riscv64:
+> ```
+>
+> Only use explicit `build-on`/`build-for` cross-compilation if you have
+> confirmed that the package and **all** of its transitive dependencies are
+> pure Python (no `.so` files anywhere in the installed tree).
 
 ### Plugin: dump — Pre-built binary
 
