@@ -18,6 +18,8 @@
       "versioningTemplate": "semver"
     }
   ],
+  "automerge": true,
+  "platformAutomerge": true,
   "baseBranchPatterns": [
     "TODO_BRANCH"
   ],
